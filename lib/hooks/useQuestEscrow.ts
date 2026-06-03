@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   useAccount,
   usePublicClient,
@@ -136,11 +136,56 @@ export function useQuestList() {
   return { quests, loading, refresh };
 }
 
-/** Implement write helpers with useWriteContract + useWaitForTransactionReceipt. */
+function useWriteAndConfirm() {
+  const [hash, setHash] = useState<`0x${string}` | undefined>();
+  const pendingRef = useRef<{
+    resolve: () => void;
+    reject: (err: Error) => void;
+  } | null>(null);
+
+  const { writeContractAsync, isPending: isWriting } = useWriteContract();
+  const { isLoading: isConfirming, isSuccess, error } = useWaitForTransactionReceipt({
+    hash,
+    query: { enabled: !!hash },
+  });
+
+  useEffect(() => {
+    if (!pendingRef.current) return;
+    if (isSuccess) {
+      pendingRef.current.resolve();
+      pendingRef.current = null;
+      setHash(undefined);
+      return;
+    }
+    if (error) {
+      pendingRef.current.reject(error instanceof Error ? error : new Error("Transaction failed"));
+      pendingRef.current = null;
+      setHash(undefined);
+    }
+  }, [isSuccess, error]);
+
+  const sendAndConfirm = useCallback(
+    async (request: Parameters<typeof writeContractAsync>[0]) => {
+      const txHash = await writeContractAsync(request);
+      setHash(txHash);
+      return new Promise<void>((resolve, reject) => {
+        pendingRef.current = { resolve, reject };
+      });
+    },
+    [writeContractAsync]
+  );
+
+  return {
+    sendAndConfirm,
+    isPending: isWriting || isConfirming,
+  };
+}
+
 export function useCreateQuest() {
   const { isConnected } = useAccount();
+  const { sendAndConfirm, isPending } = useWriteAndConfirm();
 
-  const createEthQuest = async (_input: {
+  const createEthQuest = async (input: {
     title: string;
     description: string;
     rewardEth: string;
@@ -148,38 +193,81 @@ export function useCreateQuest() {
     reviewPeriodHours: number;
   }) => {
     if (!isConnected) throw new Error("Connect MetaMask or another Web3 wallet first");
-    // TODO: useWriteContract → createQuest with value: parseEther(rewardEth), token: zeroAddress
-    throw new Error("TODO: implement useCreateQuest.createEthQuest");
+
+    const title = input.title.trim();
+    const description = input.description.trim();
+    if (!title) throw new Error("Title is required");
+    if (!description) throw new Error("Description is required");
+
+    const reward = parseEther(input.rewardEth);
+    const acceptDeadline = BigInt(Math.floor(input.acceptDeadline.getTime() / 1000));
+    const reviewPeriod = BigInt(Math.floor(input.reviewPeriodHours * 3600));
+
+    await sendAndConfirm({
+      address: QUEST_ESCROW_ADDRESS,
+      abi: questEscrowAbi,
+      functionName: "createQuest",
+      args: [title, description, reward, acceptDeadline, reviewPeriod, zeroAddress],
+      value: reward,
+    });
   };
 
-  return { createEthQuest, isPending: false };
+  return { createEthQuest, isPending };
 }
 
 export function useQuestActions(questId: bigint) {
+  const { sendAndConfirm, isPending } = useWriteAndConfirm();
+
   const accept = async () => {
-    // TODO: writeContract acceptQuest(questId)
-    throw new Error("TODO: implement accept");
+    await sendAndConfirm({
+      address: QUEST_ESCROW_ADDRESS,
+      abi: questEscrowAbi,
+      functionName: "acceptQuest",
+      args: [questId],
+    });
   };
-  const submit = async (_deliverableUri: string) => {
-    // TODO: writeContract submitWork(questId, deliverableUri)
-    throw new Error("TODO: implement submit");
+  const submit = async (deliverableUri: string) => {
+    const value = deliverableUri.trim();
+    if (!value) throw new Error("Deliverable URI is required");
+    await sendAndConfirm({
+      address: QUEST_ESCROW_ADDRESS,
+      abi: questEscrowAbi,
+      functionName: "submitWork",
+      args: [questId, value],
+    });
   };
   const approve = async () => {
-    // TODO: writeContract approveAndPay(questId)
-    throw new Error("TODO: implement approve");
+    await sendAndConfirm({
+      address: QUEST_ESCROW_ADDRESS,
+      abi: questEscrowAbi,
+      functionName: "approveAndPay",
+      args: [questId],
+    });
   };
   const claimTimeout = async () => {
-    // TODO: writeContract claimTimeoutPayout(questId)
-    throw new Error("TODO: implement claimTimeout");
+    await sendAndConfirm({
+      address: QUEST_ESCROW_ADDRESS,
+      abi: questEscrowAbi,
+      functionName: "claimTimeoutPayout",
+      args: [questId],
+    });
   };
   const cancel = async () => {
-    // TODO: writeContract cancelQuest(questId)
-    throw new Error("TODO: implement cancel");
+    await sendAndConfirm({
+      address: QUEST_ESCROW_ADDRESS,
+      abi: questEscrowAbi,
+      functionName: "cancelQuest",
+      args: [questId],
+    });
   };
   const refund = async () => {
-    // TODO: writeContract refundPoster(questId)
-    throw new Error("TODO: implement refund");
+    await sendAndConfirm({
+      address: QUEST_ESCROW_ADDRESS,
+      abi: questEscrowAbi,
+      functionName: "refundPoster",
+      args: [questId],
+    });
   };
 
-  return { accept, submit, approve, claimTimeout, cancel, refund, isPending: false };
+  return { accept, submit, approve, claimTimeout, cancel, refund, isPending };
 }
