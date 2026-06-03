@@ -81,6 +81,13 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
         uint256 acceptedAt
     );
 
+    event WorkSubmitted(
+        uint256 indexed questId,
+        address indexed worker,
+        string deliverable,
+        uint256 submittedAt
+    );
+
     constructor() Ownable(msg.sender) {
         nextQuestId = 1;
     }
@@ -177,13 +184,41 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
         emit QuestAccepted(questId, msg.sender, block.timestamp);
     }
 
+        /**
+     * @dev Allows the assigned worker to submit their work deliverable
+     * @param questId The ID of the quest to submit work for
+     * @param deliverable Hash or URL pointing to the submitted work
+     * 
+     * @notice NOTES:
+     * - Validates caller is the assigned worker (test D ensures only worker can submit)
+     * - Validates quest status is Accepted (test E ensures no submit before accept)
+     * - Validates deadline not passed
+     * - Stores deliverable string (IPFS hash, URL, or content reference)
+     * - Records submittedAt timestamp for approval timeout calculations
+     * - Updates status from Accepted to Submitted
+     * - Emits WorkSubmitted event
+     */
+    function submitWork(uint256 questId, string calldata deliverable) external nonReentrant {
+        Quest storage quest = quests[questId];
+        
+        require(quest.poster != address(0), "address does not exist");
+        
+        require(msg.sender == quest.worker, "not worker");
+        
+        require(quest.status == QuestStatus.Accepted, "not accepted");
+        
+        require(block.timestamp <= quest.deadline, "deadline passed");
+        
+        quest.deliverable = deliverable;
+        quest.submittedAt = block.timestamp;
+        quest.status = QuestStatus.Submitted;
+        
+        emit WorkSubmitted(questId, msg.sender, deliverable, block.timestamp);
+    }
+
 
     function _candidateStub() internal pure {
         revert("QuestEscrow: candidate implementation required");
-    }
-
-    function submitWork(uint256, string calldata) external {
-        _candidateStub();
     }
 
     function approveAndPay(uint256) external {
