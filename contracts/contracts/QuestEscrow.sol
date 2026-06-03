@@ -75,6 +75,12 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
         string description
     );
 
+    event QuestAccepted(
+        uint256 indexed questId,
+        address indexed worker,
+        uint256 acceptedAt
+    );
+
     constructor() Ownable(msg.sender) {
         nextQuestId = 1;
     }
@@ -143,13 +149,37 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
         return questId;
     }
 
+        /**
+     * @dev Allows a worker to accept an open quest
+     * @param questId The ID of the quest to accept
+     * 
+     * @notice NOTES:
+     * - Validates quest exists (implicitly via questId mapping)
+     * - Validates quest status is Open (not Accepted/Submitted/Completed)
+     * - Validates deadline has not passed
+     * - Assigns msg.sender as the worker
+     * - Records acceptedAt timestamp for timeout calculations
+     * - Updates status from Open to Accepted
+     * - Emits QuestAccepted event
+     */
+    function acceptQuest(uint256 questId) external nonReentrant {
+        Quest storage quest = quests[questId];
+        
+        require(quest.poster != address(0), "quest does not exist");
+        require(quest.status == QuestStatus.Open, "quest not open");
+        require(block.timestamp <= quest.deadline, "deadline passed");
+        require(quest.worker == address(0), "worker already assigned");
+        
+        quest.worker = msg.sender;
+        quest.acceptedAt = block.timestamp;
+        quest.status = QuestStatus.Accepted;
+        
+        emit QuestAccepted(questId, msg.sender, block.timestamp);
+    }
+
 
     function _candidateStub() internal pure {
         revert("QuestEscrow: candidate implementation required");
-    }
-
-    function acceptQuest(uint256) external {
-        _candidateStub();
     }
 
     function submitWork(uint256, string calldata) external {
