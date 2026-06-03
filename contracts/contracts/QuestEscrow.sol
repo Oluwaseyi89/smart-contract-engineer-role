@@ -3,6 +3,7 @@ pragma solidity ^0.8.30;
 
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 
 /**
@@ -28,6 +29,7 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
 
     uint256 public constant FEE_BPS = 300;           
     uint256 public constant BPS_DENOMINATOR = 10_000; 
+    uint256 public constant MIN_DEADLINE_SECONDS = 3600;
 
     /**
      * @dev Quest structure storing all information for a bounty
@@ -62,23 +64,88 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
 
     uint256 public nextQuestId;
 
+    // ==================== EVENTS ====================
+    event QuestCreated(
+        uint256 indexed questId,
+        address indexed poster,
+        address token,
+        uint256 reward,
+        uint256 deadline,
+        string title,
+        string description
+    );
+
     constructor() Ownable(msg.sender) {
         nextQuestId = 1;
     }
 
-    function _candidateStub() internal pure {
-        revert("QuestEscrow: candidate implementation required");
+
+    /**
+     * @dev Creates a new quest/bounty
+     * @param title Title of the quest (not stored on-chain, for event indexing)
+     * @param description Description of the quest (not stored on-chain, for event indexing)
+     * @param reward Amount to pay (in wei for ETH, or token decimals for ERC20)
+     * @param durationSeconds Duration of quest in seconds (deadline = block.timestamp + duration)
+     * @param deadlineTimestamp Alternative: absolute deadline timestamp (use 0 to use durationSeconds)
+     * @param tokenAddress address(0) for ETH, or ERC20 contract address
+     * @return questId The ID of the newly created quest
+     * 
+     * - Uses nextQuestId and increments after storing
+     * - For ETH: uses msg.value to receive payment
+     * - For ERC20: calls transferFrom to pull tokens from poster
+     * - Validates reward > 0 and deadline > block.timestamp
+     * - Minimum deadline enforced: cannot be less than 1 hour from now
+     */
+    function createQuest(
+        string calldata title,
+        string calldata description,
+        uint256 reward,
+        uint256 durationSeconds,
+        uint256 deadlineTimestamp,
+        address tokenAddress
+    ) external payable nonReentrant returns (uint256) {
+        
+        require(reward > 0, "invalid reward");
+        
+        uint256 deadline;
+        if (deadlineTimestamp > 0) {
+            deadline = deadlineTimestamp;
+        } else {
+            require(durationSeconds >= MIN_DEADLINE_SECONDS, "deadline too short");
+            deadline = block.timestamp + durationSeconds;
+        }
+        require(deadline > block.timestamp, "deadline must be in future");
+        
+        if (tokenAddress == address(0)) {
+            require(msg.value == reward, "ETH amount mismatch");
+        } else {
+            IERC20 token = IERC20(tokenAddress);
+            require(token.transferFrom(msg.sender, address(this), reward), "ERC20 transfer failed");
+        }
+        
+        uint256 questId = nextQuestId;
+        nextQuestId++;
+        
+        quests[questId] = Quest({
+            poster: msg.sender,
+            worker: address(0),
+            token: tokenAddress,
+            reward: reward,
+            deadline: deadline,
+            status: QuestStatus.Open,
+            deliverable: "",
+            acceptedAt: 0,
+            submittedAt: 0
+        });
+        
+        emit QuestCreated(questId, msg.sender, tokenAddress, reward, deadline, title, description);
+        
+        return questId;
     }
 
-    function createQuest(
-        string calldata,
-        string calldata,
-        uint256,
-        uint256,
-        uint256,
-        address
-    ) external payable returns (uint256) {
-        _candidateStub();
+
+    function _candidateStub() internal pure {
+        revert("QuestEscrow: candidate implementation required");
     }
 
     function acceptQuest(uint256) external {
