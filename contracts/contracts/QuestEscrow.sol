@@ -104,6 +104,12 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
         uint256 amount
     );
 
+    event QuestCancelled(
+        uint256 indexed questId,
+        address indexed poster,
+        uint256 refundAmount
+    );
+
     // ==================== CONSTRUCTOR ====================
     constructor() Ownable(msg.sender) {
         nextQuestId = 1;
@@ -321,15 +327,46 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
         
         emit PaymentReleased(questId, quest.worker, quest.token, workerPayout);
     }
+    
+
+    /**
+     * @dev Allows poster to cancel quest before any worker accepts it
+     * @param questId The ID of the quest to cancel
+     * 
+     * @notice NOTES:
+     * - Only poster can cancel
+     * - Quest must be in Open status (not accepted yet)
+     * - Refunds the full reward amount to poster
+     * - Updates status to Cancelled
+     * - Emits QuestCancelled event
+     */
+    function cancelQuest(uint256 questId) external nonReentrant {
+        Quest storage quest = quests[questId];
+        
+        require(quest.poster != address(0), "quest does not exist");
+        
+        require(msg.sender == quest.poster, "not poster");
+        
+        require(quest.status == QuestStatus.Open, "quest not open");
+        
+        if (quest.token == address(0)) {
+            (bool success, ) = payable(quest.poster).call{value: quest.reward}("");
+            require(success, "ETH refund failed");
+        } else {
+            IERC20 token = IERC20(quest.token);
+            require(token.transfer(quest.poster, quest.reward), "ERC20 refund failed");
+        }
+        
+        quest.status = QuestStatus.Cancelled;
+        
+        emit QuestCancelled(questId, quest.poster, quest.reward);
+    }
 
 
     function _candidateStub() internal pure {
         revert("QuestEscrow: candidate implementation required");
     }
 
-    function cancelQuest(uint256) external {
-        _candidateStub();
-    }
 
     function refundPoster(uint256) external {
         _candidateStub();
