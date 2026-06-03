@@ -278,12 +278,53 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
     }
 
 
-    function _candidateStub() internal pure {
-        revert("QuestEscrow: candidate implementation required");
+    /**
+     * @dev Allows worker to claim payment if poster doesn't approve within timeout period
+     * @param questId The ID of the quest to claim timeout payout for
+     * 
+     * @notice NOTES:
+     * - Validates caller is the assigned worker
+     * - Validates quest status is Submitted (work submitted but not approved)
+     * - Validates approval timeout has passed (poster has 7 days to approve)
+     * - Calculates and transfers payment to worker (same as approveAndPay)
+     * - Accumulates fee to owner
+     * - Updates status to Completed
+     * - Emits PaymentReleased event
+     */
+    function claimTimeoutPayout(uint256 questId) external nonReentrant {
+        Quest storage quest = quests[questId];
+        
+        require(quest.poster != address(0), "address does not exist");
+        
+        require(msg.sender == quest.worker, "not worker");
+        
+        require(quest.status == QuestStatus.Submitted, "not submitted");
+        
+        uint256 timeoutDeadline = quest.submittedAt + 7 days;
+        require(block.timestamp > timeoutDeadline, "timeout not reached");
+        
+        uint256 reward = quest.reward;
+        uint256 feeAmount = (reward * FEE_BPS) / BPS_DENOMINATOR;
+        uint256 workerPayout = reward - feeAmount;
+        
+        availableFees[owner()] += feeAmount;
+        
+        if (quest.token == address(0)) {
+            (bool success, ) = payable(quest.worker).call{value: workerPayout}("");
+            require(success, "ETH transfer failed");
+        } else {
+            IERC20 token = IERC20(quest.token);
+            require(token.transfer(quest.worker, workerPayout), "ERC20 transfer failed");
+        }
+        
+        quest.status = QuestStatus.Completed;
+        
+        emit PaymentReleased(questId, quest.worker, quest.token, workerPayout);
     }
 
-    function claimTimeoutPayout(uint256) external {
-        _candidateStub();
+
+    function _candidateStub() internal pure {
+        revert("QuestEscrow: candidate implementation required");
     }
 
     function cancelQuest(uint256) external {
