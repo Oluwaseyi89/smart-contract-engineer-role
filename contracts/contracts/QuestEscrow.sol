@@ -110,6 +110,12 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
         uint256 refundAmount
     );
 
+    event QuestRefunded(
+        uint256 indexed questId,
+        address indexed poster,
+        uint256 refundAmount
+    );
+
     // ==================== CONSTRUCTOR ====================
     constructor() Ownable(msg.sender) {
         nextQuestId = 1;
@@ -327,7 +333,7 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
         
         emit PaymentReleased(questId, quest.worker, quest.token, workerPayout);
     }
-    
+
 
     /**
      * @dev Allows poster to cancel quest before any worker accepts it
@@ -362,15 +368,47 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
         emit QuestCancelled(questId, quest.poster, quest.reward);
     }
 
+    /**
+     * @dev Allows poster to get refund if worker never submitted work
+     * @param questId The ID of the quest to refund
+     * 
+     * @notice NOTES:
+     * - Only poster can request refund
+     * - Quest must be in Accepted status (worker accepted but never submitted)
+     * - Validates submission deadline has passed
+     * - Refunds full reward to poster
+     * - Updates status to Refunded
+     * - Emits QuestRefunded event
+     */
+    function refundPoster(uint256 questId) external nonReentrant {
+        Quest storage quest = quests[questId];
+        
+        require(quest.poster != address(0), "address does not exist");
+        
+        require(msg.sender == quest.poster, "not poster");
+        
+        require(quest.status == QuestStatus.Accepted, "not accepted");
+        
+        require(block.timestamp > quest.deadline, "deadline not passed");
+        
+        if (quest.token == address(0)) {
+            (bool success, ) = payable(quest.poster).call{value: quest.reward}("");
+            require(success, "ETH refund failed");
+        } else {
+            IERC20 token = IERC20(quest.token);
+            require(token.transfer(quest.poster, quest.reward), "ERC20 refund failed");
+        }
+        
+        quest.status = QuestStatus.Refunded;
+        
+        emit QuestRefunded(questId, quest.poster, quest.reward);
+    }
+
 
     function _candidateStub() internal pure {
         revert("QuestEscrow: candidate implementation required");
     }
 
-
-    function refundPoster(uint256) external {
-        _candidateStub();
-    }
 
     function withdrawFees(address) external onlyOwner {
         _candidateStub();
