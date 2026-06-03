@@ -88,6 +88,23 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
         uint256 submittedAt
     );
 
+    event QuestCompleted(
+        uint256 indexed questId,
+        address indexed poster,
+        address indexed worker,
+        uint256 reward,
+        uint256 fee,
+        uint256 workerPayout
+    );
+    
+    event PaymentReleased(
+        uint256 indexed questId,
+        address indexed recipient,
+        address token,
+        uint256 amount
+    );
+
+    // ==================== CONSTRUCTOR ====================
     constructor() Ownable(msg.sender) {
         nextQuestId = 1;
     }
@@ -103,6 +120,7 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
      * @param tokenAddress address(0) for ETH, or ERC20 contract address
      * @return questId The ID of the newly created quest
      * 
+     * @notice NOTES:
      * - Uses nextQuestId and increments after storing
      * - For ETH: uses msg.value to receive payment
      * - For ERC20: calls transferFrom to pull tokens from poster
@@ -156,7 +174,7 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
         return questId;
     }
 
-        /**
+    /**
      * @dev Allows a worker to accept an open quest
      * @param questId The ID of the quest to accept
      * 
@@ -172,7 +190,7 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
     function acceptQuest(uint256 questId) external nonReentrant {
         Quest storage quest = quests[questId];
         
-        require(quest.poster != address(0), "quest does not exist");
+        require(quest.poster != address(0), "address does not exist");
         require(quest.status == QuestStatus.Open, "quest not open");
         require(block.timestamp <= quest.deadline, "deadline passed");
         require(quest.worker == address(0), "worker already assigned");
@@ -184,7 +202,7 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
         emit QuestAccepted(questId, msg.sender, block.timestamp);
     }
 
-        /**
+    /**
      * @dev Allows the assigned worker to submit their work deliverable
      * @param questId The ID of the quest to submit work for
      * @param deliverable Hash or URL pointing to the submitted work
@@ -216,13 +234,52 @@ contract QuestEscrow is ReentrancyGuard, Ownable {
         emit WorkSubmitted(questId, msg.sender, deliverable, block.timestamp);
     }
 
+    /**
+     * @dev Allows the poster to approve submitted work and release payment to worker
+     * @param questId The ID of the quest to approve and pay
+     * 
+     * @notice NOTES:
+     * - Validates caller is the quest poster (test D)
+     * - Validates quest status is Submitted (test E)
+     * - Calculates 3% fee: feeAmount = reward * 300 / 10000
+     * - Worker receives: reward - feeAmount (97% of reward)
+     * - Fee accumulates to availableFees[owner()] for withdrawal via withdrawFees
+     * - Supports ETH (transfer) and ERC20 (transfer) payments
+     * - Updates status to Completed
+     * - Emits QuestCompleted and PaymentReleased events
+     */
+    function approveAndPay(uint256 questId) external nonReentrant {
+        Quest storage quest = quests[questId];
+        
+        require(quest.poster != address(0), "address does not exist");
+        
+        require(msg.sender == quest.poster, "not poster");
+        
+        require(quest.status == QuestStatus.Submitted, "not submitted");
+        
+        uint256 reward = quest.reward;
+        uint256 feeAmount = (reward * FEE_BPS) / BPS_DENOMINATOR;
+        uint256 workerPayout = reward - feeAmount;
+        
+        availableFees[owner()] += feeAmount;
+
+        if (quest.token == address(0)) {
+            (bool success, ) = payable(quest.worker).call{value: workerPayout}("");
+            require(success, "ETH transfer failed");
+        } else {
+            IERC20 token = IERC20(quest.token);
+            require(token.transfer(quest.worker, workerPayout), "ERC20 transfer failed");
+        }
+        
+        quest.status = QuestStatus.Completed;
+        
+        emit QuestCompleted(questId, quest.poster, quest.worker, reward, feeAmount, workerPayout);
+        emit PaymentReleased(questId, quest.worker, quest.token, workerPayout);
+    }
+
 
     function _candidateStub() internal pure {
         revert("QuestEscrow: candidate implementation required");
-    }
-
-    function approveAndPay(uint256) external {
-        _candidateStub();
     }
 
     function claimTimeoutPayout(uint256) external {
